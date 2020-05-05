@@ -1,44 +1,41 @@
 package com.example.unittestme
 
-import android.content.SharedPreferences
-import com.example.unittestme.Constants.ADDED
-import com.nhaarman.mockitokotlin2.mock
-import com.nhaarman.mockitokotlin2.times
-import com.nhaarman.mockitokotlin2.verify
-import com.nhaarman.mockitokotlin2.whenever
-import org.junit.Before
-import org.junit.Test
-
-import org.junit.Assert.*
-import org.junit.runners.Parameterized
+import com.example.unittestme.service.Endpoint
+import com.example.unittestme.service.Status
+import com.example.unittestme.utils.SchedulerProvider
+import com.example.unittestme.utils.TestSchedulerProvider
+import com.example.unittestme.utils.TrampolineSchedulerProvider
+import io.reactivex.Observable
+import io.reactivex.observers.TestObserver
+import io.reactivex.schedulers.TestScheduler
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.mockito.Mockito.*
+import java.util.concurrent.TimeUnit
 
 class CalculatorViewModelTest {
 
-    private var mockSp: SharedPreferences = mock()
-    private var mockMathServer: MathServer = mock()
+    private var endpoint: Endpoint = mock(Endpoint::class.java)
+    private val testScheduler = TestScheduler()
 
     private lateinit var viewModel: CalculatorViewModel
 
-    @Before
-    fun setUp() {
-        viewModel = CalculatorViewModel(mockSp, mockMathServer)
+    @BeforeEach
+    internal fun setUp() {
+
     }
-
-
 
     @Test
     fun testAdd() {
-        //given
-        whenever(mockSp.getInt(ADDED,0)).thenReturn(8)
-
         //test
-        val result = viewModel.add(1, 8)
+        val result = viewModel.add(1, 7)
 
 
-        assertEquals("value was suppose to be 9, but was not", result,
-                9)
+        //verify assumption
+        assertEquals(8, result, "value was suppose to be 8, but was not")
 
-        verify(mockMathServer, times(1)).sendEqualToPrevious()
+        verify(endpoint, times(0)).sendEqualToPrevious()
     }
 
 
@@ -50,12 +47,126 @@ class CalculatorViewModelTest {
     fun testMulResultPositive() {
         val result = viewModel.mul(1, 8)
 
-        verify(mockMathServer, times(1)).sendPositiveResults()
-        assertEquals("value was suppose to be 8, but was not", result,
-                8)
+        //verify assumption
+        verify(endpoint, times(1)).sendPositiveResults()
+
+        assertEquals(8, result, "value was suppose to be 8, but was not")
     }
 
     @Test
     fun testMulResultZero() {
+        val result = viewModel.mul(0, 8)
+
+        //verify assumption
+        verify(endpoint, times(1)).sendZeroResults()
+
+        assertEquals(result,
+                0, "value was suppose to be 0, but was not")
+    }
+
+    @Test
+    fun `0) test getStatus with Success on normal scheduler`() {
+        viewModel = CalculatorViewModel(endpoint, SchedulerProvider())
+        `when`(endpoint.getStatus(viewModel.schedulerProvider.io())).thenReturn(Observable.just(Endpoint.StatusResponse(Status.SUCCESS)))
+
+        viewModel.getStatus()
+        assertEquals(viewModel.currentStatus, Status.SUCCESS, "we did not get a SUCCESS status")
+
+    }
+
+    @Test
+    fun `1) test getStatus with Success`() {
+        viewModel = CalculatorViewModel(endpoint, TrampolineSchedulerProvider())
+        `when`(endpoint.getStatus(viewModel.schedulerProvider.io())).thenReturn(Observable.just(Endpoint.StatusResponse(Status.SUCCESS)))
+
+        viewModel.getStatus()
+        assertEquals(viewModel.currentStatus, Status.SUCCESS, "we did not get a SUCCESS status")
+
+    }
+
+    @Test
+    fun `2) test getStatusAfterDelay with Success`() {
+        viewModel = CalculatorViewModel(endpoint, TrampolineSchedulerProvider()) //<- synchronous Let's get back to the presentation
+        //given
+        `when`(endpoint.getStatus(viewModel.schedulerProvider.io())).thenReturn(Observable.just(Endpoint.StatusResponse(Status.SUCCESS)))
+
+        viewModel.getStatusAfterDelay()
+        //?
+        assertEquals(null, viewModel.currentStatus, "the status was already initialized")
+
+        assertEquals(Status.SUCCESS, viewModel.currentStatus, "we did not get a success status")
+        verify(endpoint, times(1)).getStatus(viewModel.schedulerProvider.io())
+    }
+
+    @Test
+    fun `3) test getStatusAfterDelay with Exception`() {
+        viewModel = CalculatorViewModel(endpoint, TestSchedulerProvider(testScheduler))
+        //given
+        `when`(endpoint.getStatus(viewModel.schedulerProvider.io())).thenReturn(Observable.error(Exception()))
+
+        viewModel.getStatusAfterDelay()
+        assertEquals(null, viewModel.currentStatus, "the status was already initialized")
+        testScheduler.advanceTimeBy(5, TimeUnit.SECONDS)
+
+        assertEquals( Status.FAIL, viewModel.currentStatus,"we did not get a FAIL status")
+        verify(endpoint, times(2)).getStatus(viewModel.schedulerProvider.io())
+    }
+
+    @Test
+    fun `4) test getStatusWithInterval with Processing`(){
+        viewModel = CalculatorViewModel(endpoint, TestSchedulerProvider(testScheduler))
+        //given
+        `when`(endpoint.getStatus(viewModel.schedulerProvider.io())).thenReturn(Observable.just(Endpoint.StatusResponse(Status.PROCESSING)))
+
+        viewModel.getStatusWithInterval()
+
+        assertEquals(null, viewModel.currentStatus, "the status was already initialized")
+        testScheduler.advanceTimeBy(15 , TimeUnit.SECONDS)
+        assertEquals(Status.PROCESSING, viewModel.currentStatus, "we did not get a processing status")
+
+        verify(endpoint, times(1)).getStatus(viewModel.schedulerProvider.io())
+    }
+
+    @Test
+    fun `5) test getStatusWithInterval 8 times`(){
+        viewModel = CalculatorViewModel(endpoint, TestSchedulerProvider(testScheduler))
+        //given
+        `when`(endpoint.getStatus(viewModel.schedulerProvider.io())).thenReturn(Observable.just(Endpoint.StatusResponse(Status.PROCESSING)))
+
+       val testObserver =  TestObserver<Endpoint.StatusResponse>()
+        viewModel.getStatusObservable().observeOn(testScheduler).subscribe(testObserver)
+
+        testScheduler.advanceTimeBy(10, TimeUnit.SECONDS)
+
+        testObserver.assertNotTerminated()
+
+        testScheduler.advanceTimeBy(15 * 4, TimeUnit.SECONDS)
+
+        testObserver.assertNotTerminated()
+
+        testScheduler.advanceTimeBy(15 * 4, TimeUnit.SECONDS)
+
+        testObserver.assertValues(Endpoint.StatusResponse(Status.PROCESSING),Endpoint.StatusResponse(Status.PROCESSING),Endpoint.StatusResponse(Status.PROCESSING),
+                Endpoint.StatusResponse(Status.PROCESSING),Endpoint.StatusResponse(Status.PROCESSING),Endpoint.StatusResponse(Status.PROCESSING),Endpoint.StatusResponse(Status.PROCESSING),
+                Endpoint.StatusResponse(Status.PROCESSING))
+
+        testObserver.assertComplete()
+
+    }
+
+    @Test
+    fun `5) test getStatusWithInterval 1 success`(){
+        viewModel = CalculatorViewModel(endpoint, TestSchedulerProvider(testScheduler))
+        //given
+        `when`(endpoint.getStatus(viewModel.schedulerProvider.io())).thenReturn(Observable.just(Endpoint.StatusResponse(Status.SUCCESS)))
+
+        val testObserver =  TestObserver<Endpoint.StatusResponse>()
+        viewModel.getStatusObservable().observeOn(testScheduler).subscribe(testObserver)
+
+        testScheduler.advanceTimeBy(15, TimeUnit.SECONDS)
+        assertEquals(Status.SUCCESS, viewModel.currentStatus, "we did not get a processing status")
+        testObserver.assertValues(Endpoint.StatusResponse(Status.SUCCESS))
+        testObserver.assertComplete()
+
     }
 }
